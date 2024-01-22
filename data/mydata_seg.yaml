@@ -1,0 +1,9 @@
+path: ../datasets/satellite-image-segmentation  # dataset root dir
+val: valid/images
+train: train/images
+test: test/images
+nc: 3
+names:
+  0: Agriculture-lands
+  1: Water-
+  2: urban-building
