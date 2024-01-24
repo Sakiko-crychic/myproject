@@ -56,12 +56,17 @@ for wavelet_name in wavelets:
         A_ms, (H_ms, V_ms) = coeffs_ms
         D_ms = None
 
-    # 高频分量融合（取极大值）
-    H_fused = np.maximum(H_pan, H_ms) if H_pan is not None and H_ms is not None else (
-        H_pan if H_pan is not None else H_ms)
-    V_fused = np.maximum(V_pan, V_ms) if V_pan is not None and V_ms is not None else (
-        V_pan if V_pan is not None else V_ms)
-    D_fused = np.maximum(D_pan, D_ms) if D_pan is not None and D_ms is not None else (
+    # 高频分量融合（基于边缘检测）
+    edge_pan = np.sqrt(H_pan ** 2 + V_pan ** 2)
+    edge_ms = np.sqrt(H_ms ** 2 + V_ms ** 2)
+
+    # 基于边缘检测的融合规则
+    weight_pan = edge_pan / (edge_pan + edge_ms + 1e-8)
+    weight_ms = edge_ms / (edge_pan + edge_ms + 1e-8)
+
+    H_fused = weight_pan * H_pan + weight_ms * H_ms
+    V_fused = weight_pan * V_pan + weight_ms * V_ms
+    D_fused = weight_pan * D_pan + weight_ms * D_ms if D_pan is not None and D_ms is not None else (
         D_pan if D_pan is not None else D_ms)
 
     # 低频分量融合（取加权平均）
@@ -95,3 +100,5 @@ for wavelet_name in wavelets:
         result_file.write(f'PSNR: {psnr}\n')
         result_file.write(f'Avg Grad: {avg_grad}\n')
         result_file.write(f'RMSE: {rmse}\n')
+
+
