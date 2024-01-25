@@ -23,8 +23,8 @@ def evaluate_fusion(original, fused):
 
 
 # 读取全色和多光谱图像
-pan_image = cv2.imread('D:/yolov5/data/fusion_images/PAN.png', cv2.IMREAD_GRAYSCALE)
-ms_image = cv2.imread('D:/yolov5/data/fusion_images/MS.png')
+pan_image = cv2.imread('./data/fusion_images/PAN.png', cv2.IMREAD_GRAYSCALE)
+ms_image = cv2.imread('./data/fusion_images/MS.png')
 
 # HIS变换
 hsv_image = cv2.cvtColor(ms_image, cv2.COLOR_BGR2HSV)
@@ -33,7 +33,7 @@ h, s, v = cv2.split(hsv_image)
 # 尝试不同的小波基
 wavelets = ['haar', 'db3', 'bior3.7', 'sym3', 'rbio3.7', 'dmey']  # 可以继续添加其他小波基
 
-result_file_path = 'D:/yolov5/data/fusion_images/result/results.txt'
+result_file_path = './data/fusion_images/result/results.txt'
 
 # 清空文件内容
 open(result_file_path, 'w').close()
@@ -87,7 +87,7 @@ for wavelet_name in wavelets:
     fused_rgb = cv2.cvtColor(hsv_fused, cv2.COLOR_HSV2BGR)
 
     # 保存融合后的图像
-    output_path = f'D:/yolov5/data/fusion_images/fused_image_{wavelet_name}.png'
+    output_path = f'./data/fusion_images/fused_image_{wavelet_name}.png'
     cv2.imwrite(output_path, fused_rgb)
 
     # 计算客观评价指标并保存到txt文件
