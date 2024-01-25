@@ -1,12 +1,19 @@
 import cv2
 import numpy as np
-import pywt
-from skimage.metrics import peak_signal_noise_ratio, mean_squared_error
+from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.factory import get_sampling, get_crossover, get_mutation
+from pymoo.model.problem import Problem
+from pymoo.optimize import minimize
 
+def canny_edge_weight(image, sigma=1.0):
+    edges = cv2.Canny(image.astype(np.uint8), 50, 150)
+    weights = cv2.GaussianBlur(edges.astype(np.float64), (0, 0), sigma)
+    weights /= np.max(weights)
+    return weights
 
 def evaluate_fusion(original, fused):
     cc = np.corrcoef(original.flatten(), fused.flatten())[0, 1]
-    psnr = peak_signal_noise_ratio(original, fused)
+    psnr = cv2.PSNR(original, fused)
 
     grad_original_x = cv2.Sobel(original, cv2.CV_64F, 1, 0, ksize=3)
     grad_original_y = cv2.Sobel(original, cv2.CV_64F, 0, 1, ksize=3)
@@ -17,10 +24,29 @@ def evaluate_fusion(original, fused):
     grad_diff = np.abs(grad_original - grad_fused)
     avg_grad = np.mean(grad_diff)
 
-    rmse = np.sqrt(mean_squared_error(original, fused))
+    rmse = np.sqrt(np.mean((original - fused) ** 2))
 
-    return cc, psnr, avg_grad, rmse
+    mean_original = np.mean(original)
 
+    rase = rmse / mean_original
+
+    return cc, psnr, avg_grad, rmse, rase
+
+class ImageFusionProblem(Problem):
+    def __init__(self, pan_image, ms_image, original_gray):
+        super().__init__(n_var=2, n_obj=2, xl=np.zeros(2), xu=np.ones(2))
+        self.pan_image = pan_image
+        self.ms_image = ms_image
+        self.original_gray = original_gray
+
+    def _evaluate(self, x, out, *args, **kwargs):
+        weight_pan, weight_ms = x
+
+        fused_image = weight_pan * self.pan_image + weight_ms * self.ms_image
+
+        cc, psnr, avg_grad, rmse, rase = evaluate_fusion(self.original_gray, fused_image)
+
+        out["F"] = np.array([rmse, rase])
 
 # 读取全色和多光谱图像
 pan_image = cv2.imread('./data/fusion_images/PAN.png', cv2.IMREAD_GRAYSCALE)
@@ -30,68 +56,31 @@ ms_image = cv2.imread('./data/fusion_images/MS.png')
 hsv_image = cv2.cvtColor(ms_image, cv2.COLOR_BGR2HSV)
 h, s, v = cv2.split(hsv_image)
 
-# 尝试不同的小波基
-wavelets = ['haar', 'db3', 'bior3.7', 'sym3', 'rbio3.7', 'dmey']  # 可以继续添加其他小波基
+# 计算原始灰度图像
+original_gray = cv2.cvtColor(ms_image, cv2.COLOR_BGR2GRAY)
 
-result_file_path = './data/fusion_images/result/results.txt'
+# 定义图像融合问题
+problem = ImageFusionProblem(pan_image, ms_image, original_gray)
 
-# 清空文件内容
-open(result_file_path, 'w').close()
+# 定义NSGA2算法
+algorithm = NSGA2(pop_size=100,
+                  sampling=get_sampling("real_lhs"),
+                  crossover=get_crossover("real_sbx", prob=0.9, eta=15),
+                  mutation=get_mutation("real_pm", eta=20),
+                  eliminate_duplicates=True)
 
-for wavelet_name in wavelets:
-    # 小波分解
-    coeffs_pan = pywt.dwt2(pan_image, wavelet_name)
-    coeffs_ms = pywt.dwt2(v, wavelet_name)
+# 运行优化
+res = minimize(problem, algorithm)
 
-    # 获取低频和高频分量
-    try:
-        A_pan, (H_pan, V_pan, D_pan) = coeffs_pan
-    except ValueError:
-        A_pan, (H_pan, V_pan) = coeffs_pan
-        D_pan = None
+# 获取 Pareto 最优解集
+pareto_set = res.F
 
-    try:
-        A_ms, (H_ms, V_ms, D_ms) = coeffs_ms
-    except ValueError:
-        A_ms, (H_ms, V_ms) = coeffs_ms
-        D_ms = None
+# 选择 Pareto 最优解中的权重
+best_weights = pareto_set[np.argmin(pareto_set[:, 0])]  # 选择RMSE最小的权重
 
-    # 高频分量融合（取极大值）
-    H_fused = np.maximum(H_pan, H_ms) if H_pan is not None and H_ms is not None else (
-        H_pan if H_pan is not None else H_ms)
-    V_fused = np.maximum(V_pan, V_ms) if V_pan is not None and V_ms is not None else (
-        V_pan if V_pan is not None else V_ms)
-    D_fused = np.maximum(D_pan, D_ms) if D_pan is not None and D_ms is not None else (
-        D_pan if D_pan is not None else D_ms)
+# 使用最优权重进行图像融合
+fused_image = best_weights[0] * pan_image + best_weights[1] * ms_image
 
-    # 低频分量融合（取加权平均）
-    A_fused = (A_pan + A_ms) / 2
-
-    # 逆小波变换
-    if D_fused is not None:
-        coeffs_fused = A_fused, (H_fused, V_fused, D_fused)
-    else:
-        coeffs_fused = A_fused, (H_fused, V_fused)
-    fused_image = pywt.idwt2(coeffs_fused, wavelet_name)
-
-    # Resize fused_image to match the original image size
-    fused_image = cv2.resize(fused_image.astype(np.uint8), (ms_image.shape[1], ms_image.shape[0]))
-
-    # HIS逆变换
-    hsv_fused = cv2.merge([h, s, fused_image])
-    fused_rgb = cv2.cvtColor(hsv_fused, cv2.COLOR_HSV2BGR)
-
-    # 保存融合后的图像
-    output_path = f'./data/fusion_images/fused_image_{wavelet_name}.png'
-    cv2.imwrite(output_path, fused_rgb)
-
-    # 计算客观评价指标并保存到txt文件
-    original_gray = cv2.cvtColor(ms_image, cv2.COLOR_BGR2GRAY)
-    cc, psnr, avg_grad, rmse = evaluate_fusion(original_gray, fused_image)
-
-    with open(result_file_path, 'a') as result_file:
-        result_file.write(f'\nResults for {wavelet_name}:\n')
-        result_file.write(f'CC: {cc}\n')
-        result_file.write(f'PSNR: {psnr}\n')
-        result_file.write(f'Avg Grad: {avg_grad}\n')
-        result_file.write(f'RMSE: {rmse}\n')
+# 保存融合后的图像
+output_path = f'./data/fusion_images/fused_image_nsga2.png'
+cv2.imwrite(output_path, fused_image)

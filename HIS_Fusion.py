@@ -4,6 +4,17 @@ import pywt
 from skimage.metrics import peak_signal_noise_ratio, mean_squared_error
 
 
+def canny_edge_weight(image, sigma=1.0):
+    # 使用Canny算子提取边缘
+    edges = cv2.Canny(image.astype(np.uint8), 50, 150)  # 调整低阈值和高阈值
+
+    # 计算高斯权重
+    weights = cv2.GaussianBlur(edges.astype(np.float64), (0, 0), sigma)
+    weights /= np.max(weights)  # 归一化到 [0, 1] 范围
+
+    return weights
+
+
 def evaluate_fusion(original, fused):
     cc = np.corrcoef(original.flatten(), fused.flatten())[0, 1]
     psnr = peak_signal_noise_ratio(original, fused)
@@ -19,7 +30,13 @@ def evaluate_fusion(original, fused):
 
     rmse = np.sqrt(mean_squared_error(original, fused))
 
-    return cc, psnr, avg_grad, rmse
+    # 计算实际值的平均值
+    mean_original = np.mean(original)
+
+    # 计算 RASE
+    rase = rmse / mean_original
+
+    return cc, psnr, avg_grad, rmse, rase
 
 
 # 读取全色和多光谱图像
@@ -56,17 +73,17 @@ for wavelet_name in wavelets:
         A_ms, (H_ms, V_ms) = coeffs_ms
         D_ms = None
 
-    # 高频分量融合（基于边缘检测）
-    edge_pan = np.sqrt(H_pan ** 2 + V_pan ** 2)
-    edge_ms = np.sqrt(H_ms ** 2 + V_ms ** 2)
+    # 高频分量融合（基于Canny算子的思想）
+    weight_pan = canny_edge_weight(pan_image, sigma=1.0)
+    weight_ms = canny_edge_weight(v, sigma=1.0)
 
-    # 基于边缘检测的融合规则
-    weight_pan = edge_pan / (edge_pan + edge_ms + 1e-8)
-    weight_ms = edge_ms / (edge_pan + edge_ms + 1e-8)
+    # 将权重调整为与高频分量相同的大小
+    weight_pan_resized = cv2.resize(weight_pan, (H_pan.shape[1], H_pan.shape[0]))
+    weight_ms_resized = cv2.resize(weight_ms, (H_ms.shape[1], H_ms.shape[0]))
 
-    H_fused = weight_pan * H_pan + weight_ms * H_ms
-    V_fused = weight_pan * V_pan + weight_ms * V_ms
-    D_fused = weight_pan * D_pan + weight_ms * D_ms if D_pan is not None and D_ms is not None else (
+    H_fused = weight_pan_resized * H_pan + weight_ms_resized * H_ms
+    V_fused = weight_pan_resized * V_pan + weight_ms_resized * V_ms
+    D_fused = weight_pan_resized * D_pan + weight_ms_resized * D_ms if D_pan is not None and D_ms is not None else (
         D_pan if D_pan is not None else D_ms)
 
     # 低频分量融合（取加权平均）
@@ -92,7 +109,7 @@ for wavelet_name in wavelets:
 
     # 计算客观评价指标并保存到txt文件
     original_gray = cv2.cvtColor(ms_image, cv2.COLOR_BGR2GRAY)
-    cc, psnr, avg_grad, rmse = evaluate_fusion(original_gray, fused_image)
+    cc, psnr, avg_grad, rmse, rase = evaluate_fusion(original_gray, fused_image)
 
     with open(result_file_path, 'a') as result_file:
         result_file.write(f'\nResults for {wavelet_name}:\n')
@@ -100,5 +117,4 @@ for wavelet_name in wavelets:
         result_file.write(f'PSNR: {psnr}\n')
         result_file.write(f'Avg Grad: {avg_grad}\n')
         result_file.write(f'RMSE: {rmse}\n')
-
-
+        result_file.write(f'RASE: {rase}\n')
