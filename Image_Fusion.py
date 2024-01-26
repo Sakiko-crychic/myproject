@@ -1,86 +1,141 @@
-import cv2
+#2024/1/26 MOPSO优化
 import numpy as np
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.factory import get_sampling, get_crossover, get_mutation
-from pymoo.model.problem import Problem
-from pymoo.optimize import minimize
+from pyswarm import pso
+from skimage import io, color
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.util import img_as_ubyte
+import cv2
+from skimage.metrics import peak_signal_noise_ratio, mean_squared_error
+from skimage.transform import resize
 
-def canny_edge_weight(image, sigma=1.0):
-    edges = cv2.Canny(image.astype(np.uint8), 50, 150)
-    weights = cv2.GaussianBlur(edges.astype(np.float64), (0, 0), sigma)
-    weights /= np.max(weights)
-    return weights
+def evaluate(image, params, original_gray):
+    # 在这个例子中，假设 params 是图像处理参数
+    processed_image = some_image_processing_function(image, params)
+
+    cc, psnr_value, avg_grad, rmse, rase = evaluate_fusion(original_gray, processed_image)
+
+    # 返回一个目标函数值，这里取负值使其变为最大化问题
+    return -psnr_value
+
+# 图像处理函数，根据参数处理图像
+def some_image_processing_function(image, params):
+    # 在这里实现具体的图像处理操作，根据参数修改图像
+    # 如果输入图像是彩色的，对每个通道进行相同或类似的处理
+    if image.ndim == 3:
+        processed_image = np.zeros_like(image)
+        for channel in range(image.shape[2]):
+            processed_image[:, :, channel] = some_processing_function_for_each_channel(image[:, :, channel], params)
+    else:
+        processed_image = some_processing_function_for_each_channel(image, params)
+
+    # 确保处理后的图像与输入图像具有相同的大小
+    processed_image = resize(processed_image, image.shape, mode='reflect', anti_aliasing=True)
+
+    return processed_image
+
+# 通道处理函数，根据参数处理通道
+def some_processing_function_for_each_channel(channel, params):
+    # 在这里实现具体的通道处理操作，根据参数修改通道
+    # 这里只是一个示例，实际上需要替换为具体的通道处理操作
+    processed_channel = channel  # 保留通道信息
+    return processed_channel
 
 def evaluate_fusion(original, fused):
-    cc = np.corrcoef(original.flatten(), fused.flatten())[0, 1]
-    psnr = cv2.PSNR(original, fused)
+    # 将原始图像转换为RGB格式，以匹配融合后的图像
+    original_rgb = color.gray2rgb(original)
 
+    cc = np.corrcoef(original_rgb.flatten(), fused.flatten())[0, 1]
+
+    psnr_value = psnr(img_as_ubyte(original_rgb), img_as_ubyte(fused))
+
+    # 计算灰度图像的梯度
     grad_original_x = cv2.Sobel(original, cv2.CV_64F, 1, 0, ksize=3)
     grad_original_y = cv2.Sobel(original, cv2.CV_64F, 0, 1, ksize=3)
-    grad_fused_x = cv2.Sobel(fused, cv2.CV_64F, 1, 0, ksize=3)
-    grad_fused_y = cv2.Sobel(fused, cv2.CV_64F, 0, 1, ksize=3)
+
+    # 分别计算每个通道的融合图像梯度
+    grad_fused_x = np.zeros_like(fused)
+    grad_fused_y = np.zeros_like(fused)
+
+    for i in range(fused.shape[2]):
+        grad_fused_x[:, :, i] = cv2.Sobel(fused[:, :, i], cv2.CV_64F, 1, 0, ksize=3)
+        grad_fused_y[:, :, i] = cv2.Sobel(fused[:, :, i], cv2.CV_64F, 0, 1, ksize=3)
+
+    # 计算梯度幅值
     grad_original = np.sqrt(grad_original_x ** 2 + grad_original_y ** 2)
-    grad_fused = np.sqrt(grad_fused_x ** 2 + grad_fused_y ** 2)
+    grad_fused = np.sqrt(np.sum(np.square(grad_fused_x), axis=2) + np.sum(np.square(grad_fused_y), axis=2))
+
+    # 计算梯度差异
     grad_diff = np.abs(grad_original - grad_fused)
     avg_grad = np.mean(grad_diff)
 
-    rmse = np.sqrt(np.mean((original - fused) ** 2))
+    # 将 original 转换为彩色图像
+    original_rgb = color.gray2rgb(original)
 
-    mean_original = np.mean(original)
+    # 确保计算的均方误差具有相同的形状
+    rmse = np.sqrt(mean_squared_error(original_rgb, fused))
 
+    # 计算实际值的平均值
+    mean_original = np.mean(original_rgb)
+
+    # 计算 RASE
     rase = rmse / mean_original
 
-    return cc, psnr, avg_grad, rmse, rase
+    return cc, psnr_value, avg_grad, rmse, rase
 
-class ImageFusionProblem(Problem):
-    def __init__(self, pan_image, ms_image, original_gray):
-        super().__init__(n_var=2, n_obj=2, xl=np.zeros(2), xu=np.ones(2))
-        self.pan_image = pan_image
-        self.ms_image = ms_image
-        self.original_gray = original_gray
 
-    def _evaluate(self, x, out, *args, **kwargs):
-        weight_pan, weight_ms = x
+# MOPSO 优化函数
+def mopso_optimization():
+    # 读取全色和多光谱图像
+    pan_image = cv2.imread('./data/fusion_images/PAN.png', cv2.IMREAD_GRAYSCALE)
+    ms_image = cv2.imread('./data/fusion_images/MS.png')
+    # 读取输入图像
+    input_image_path = "./data/fusion_images/fused_image_bior3.7.png"
+    input_image = io.imread(input_image_path)
+    original_gray = cv2.cvtColor(ms_image, cv2.COLOR_BGR2GRAY)
 
-        fused_image = weight_pan * self.pan_image + weight_ms * self.ms_image
+    # 将图像转为彩色图（如果不是彩色图的话）
+    if input_image.ndim == 2:
+        input_image = color.gray2rgb(input_image)
 
-        cc, psnr, avg_grad, rmse, rase = evaluate_fusion(self.original_gray, fused_image)
+    # 参数范围
+    param_ranges = np.array([
+        (-1.0, 1.0),
+        (-1.0, 1.0),
+        # ... 继续列举其他参数的范围
+    ])
 
-        out["F"] = np.array([rmse, rase])
+    # 定义优化问题
+    def objective(params):
+        # 将参数传递给评价函数
+        return evaluate(input_image, params, original_gray)
 
-# 读取全色和多光谱图像
-pan_image = cv2.imread('./data/fusion_images/PAN.png', cv2.IMREAD_GRAYSCALE)
-ms_image = cv2.imread('./data/fusion_images/MS.png')
+    # 使用 PSO 算法进行优化
+    best_params, _ = pso(objective, lb=param_ranges[:, 0], ub=param_ranges[:, 1])
 
-# HIS变换
-hsv_image = cv2.cvtColor(ms_image, cv2.COLOR_BGR2HSV)
-h, s, v = cv2.split(hsv_image)
+    # 打印最优参数
+    print("Best parameters:", best_params)
 
-# 计算原始灰度图像
-original_gray = cv2.cvtColor(ms_image, cv2.COLOR_BGR2GRAY)
+    # 使用最优参数处理图像
+    processed_image = some_image_processing_function(input_image, best_params)
 
-# 定义图像融合问题
-problem = ImageFusionProblem(pan_image, ms_image, original_gray)
+    # 保存处理后的图像
+    output_image_path = "./data/fusion_images/processed_image.png"
 
-# 定义NSGA2算法
-algorithm = NSGA2(pop_size=100,
-                  sampling=get_sampling("real_lhs"),
-                  crossover=get_crossover("real_sbx", prob=0.9, eta=15),
-                  mutation=get_mutation("real_pm", eta=20),
-                  eliminate_duplicates=True)
+    # 确保在保存之前图像处于适当的模式
+    processed_image_uint8 = img_as_ubyte(processed_image)
 
-# 运行优化
-res = minimize(problem, algorithm)
+    io.imsave(output_image_path, processed_image_uint8)  # 保持彩色信息
+    # 计算评价指标
+    cc, psnr_value, avg_grad, rmse, rase = evaluate_fusion(original_gray, processed_image_uint8)
 
-# 获取 Pareto 最优解集
-pareto_set = res.F
+    # 保存结果到文件
+    result_path = "D:/myproject/data/fusion_images/result/results_mopso.txt"
+    with open(result_path, 'w') as f:
+        f.write(f"CC: {cc}\n")
+        f.write(f"PSNR: {psnr_value}\n")
+        f.write(f"Avg Grad: {avg_grad}\n")
+        f.write(f"RMSE: {rmse}\n")
+        f.write(f"RASE: {rase}\n")
+# 执行 MOPSO 优化
+mopso_optimization()
 
-# 选择 Pareto 最优解中的权重
-best_weights = pareto_set[np.argmin(pareto_set[:, 0])]  # 选择RMSE最小的权重
-
-# 使用最优权重进行图像融合
-fused_image = best_weights[0] * pan_image + best_weights[1] * ms_image
-
-# 保存融合后的图像
-output_path = f'./data/fusion_images/fused_image_nsga2.png'
-cv2.imwrite(output_path, fused_image)
