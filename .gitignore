@@ -38,8 +38,8 @@ data/images/*
 results*.csv
 
 # Fusion Images ----------------------------------------------------------------------------------------------------------
-data/fusion_images/
-data/HIT_satelliteDataFromGoogle/
+data/fusion_images/*
+data/HIT_satelliteDataFromGoogle/*
 # Datasets -------------------------------------------------------------------------------------------------------------
 coco/
 coco128/
